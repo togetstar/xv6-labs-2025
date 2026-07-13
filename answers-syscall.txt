@@ -1,0 +1,18 @@
+1. syscall was called by usertrap().
+
+2. p->trapframe->a7 was 0xf. This is SYS_open, the system call number for
+   open(), because init's first user-level system call is open("console",
+   O_RDWR).
+
+3. The previous CPU mode was user mode. In sstatus, the SPP bit is clear,
+   meaning the trap came from U-mode.
+
+4. After changing syscall() to read num from address 0, the faulting
+   instruction is a load from address zero, e.g. lw a3,0(zero). In that
+   generated code, a3 holds the local variable num.
+
+5. The kernel crashes because address 0 is not mapped in the kernel page
+   table. The load causes a supervisor load page fault; scause=0xd confirms
+   that this was a load page fault.
+
+6. The running process was init, with pid 1.
