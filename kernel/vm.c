@@ -17,6 +17,8 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+static uint64 cowfault(pagetable_t pagetable, uint64 va);
+
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -299,7 +301,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -308,11 +309,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       continue;   // physical page hasn't been allocated
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if(flags & PTE_W){
+      flags = (flags & ~PTE_W) | PTE_COW;
+      *pte = PA2PTE(pa) | flags;
+      sfence_vma();
+    }
+    kincref((void*)pa);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      kfree((void*)pa);
       goto err;
     }
   }
@@ -334,6 +338,42 @@ uvmclear(pagetable_t pagetable, uint64 va)
   if(pte == 0)
     panic("uvmclear");
   *pte &= ~PTE_U;
+}
+
+static uint64
+cowfault(pagetable_t pagetable, uint64 va)
+{
+  uint flags;
+  uint64 mem, pa;
+  pte_t *pte;
+
+  if(va >= MAXVA)
+    return 0;
+  va = PGROUNDDOWN(va);
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if((*pte & (PTE_V|PTE_U|PTE_COW)) != (PTE_V|PTE_U|PTE_COW))
+    return 0;
+
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  flags = (flags | PTE_W) & ~PTE_COW;
+
+  if(krefcnt((void*)pa) == 1){
+    *pte = PA2PTE(pa) | flags;
+    sfence_vma();
+    return pa;
+  }
+
+  mem = (uint64)kalloc();
+  if(mem == 0)
+    return 0;
+  memmove((void*)mem, (void*)pa, PGSIZE);
+  *pte = PA2PTE(mem) | flags;
+  sfence_vma();
+  kfree((void*)pa);
+  return mem;
 }
 
 // Copy from kernel to user.
@@ -359,8 +399,12 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
     pte = walk(pagetable, va0, 0);
     // forbid copyout over read-only user text pages.
-    if((*pte & PTE_W) == 0)
-      return -1;
+    if((*pte & PTE_W) == 0){
+      if((*pte & PTE_COW) == 0)
+        return -1;
+      if((pa0 = cowfault(pagetable, va0)) == 0)
+        return -1;
+    }
       
     n = PGSIZE - (dstva - va0);
     if(n > len)
@@ -453,19 +497,28 @@ uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   uint64 mem;
+  pte_t *pte;
   struct proc *p = myproc();
 
-  if (va >= p->sz)
+  if(va >= MAXVA)
+    return 0;
+  if(va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
+  pte = walk(pagetable, va, 0);
+  if(pte != 0 && (*pte & PTE_V)){
+    if((*pte & PTE_U) == 0)
+      return 0;
+    if(!read && (*pte & PTE_COW))
+      return cowfault(pagetable, va);
     return 0;
   }
+
   mem = (uint64) kalloc();
   if(mem == 0)
     return 0;
   memset((void *) mem, 0, PGSIZE);
-  if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
+  if (mappages(pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
     kfree((void *)mem);
     return 0;
   }
