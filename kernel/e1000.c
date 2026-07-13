@@ -17,6 +17,7 @@ static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 static volatile uint32 *regs;
 
 struct spinlock e1000_lock;
+static char *tx_bufs[TX_RING_SIZE];
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -93,31 +94,69 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(char *buf, int len)
 {
-  //
-  // Your code here.
-  //
-  // buf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after send completes.
-  //
-  // return 0 on success.
-  // return -1 on failure (e.g., there is no descriptor available)
-  // so that the caller knows to free buf.
-  //
+  uint32 i;
 
-  
+  acquire(&e1000_lock);
+
+  i = regs[E1000_TDT];
+  if((tx_ring[i].status & E1000_TXD_STAT_DD) == 0){
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(tx_bufs[i])
+    kfree(tx_bufs[i]);
+
+  tx_bufs[i] = buf;
+  tx_ring[i].addr = (uint64)buf;
+  tx_ring[i].length = len;
+  tx_ring[i].cso = 0;
+  tx_ring[i].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tx_ring[i].status = 0;
+  tx_ring[i].css = 0;
+  tx_ring[i].special = 0;
+
+  __sync_synchronize();
+  regs[E1000_TDT] = (i + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver a buf for each packet (using net_rx()).
-  //
+  uint32 i;
+  int len;
+  char *buf, *newbuf;
+
+  for(;;){
+    acquire(&e1000_lock);
+
+    i = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    if((rx_ring[i].status & E1000_RXD_STAT_DD) == 0){
+      release(&e1000_lock);
+      break;
+    }
+
+    len = rx_ring[i].length;
+    buf = (char*)rx_ring[i].addr;
+    newbuf = kalloc();
+    if(newbuf == 0){
+      rx_ring[i].status = 0;
+      regs[E1000_RDT] = i;
+      release(&e1000_lock);
+      continue;
+    }
+
+    rx_ring[i].addr = (uint64)newbuf;
+    rx_ring[i].status = 0;
+    rx_ring[i].errors = 0;
+    regs[E1000_RDT] = i;
+
+    release(&e1000_lock);
+    net_rx(buf, len);
+  }
 
 }
 
