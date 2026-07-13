@@ -1,0 +1,21 @@
+1. Function arguments are passed in a0 through a7. In main's call to printf,
+   13 is passed in register a2.
+
+2. The compiler inlines f() and g(), so main does not contain a call to f or g.
+   It computes f(8)+1 directly as 12 before calling printf.
+
+3. printf is located at the address shown by the printf symbol in user/call.asm.
+   In this build it is 0x0000000000000734.
+
+4. Just after main's jal to printf, ra contains the return address, which is
+   the instruction after the call. In this build that is 0x000000000000003c.
+
+5. The code prints:
+   HE110 World
+   On a big-endian machine, i would need to be 0x726c6400 to put the bytes for
+   "rld\0" in memory in the same order. The value 57616 would not need to
+   change.
+
+6. The value printed after y= is whatever happens to be next in the calling
+   convention/stack state, because printf expects another integer argument but
+   the caller supplied only one. It is not a defined value.
