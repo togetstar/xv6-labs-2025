@@ -16,6 +16,8 @@
 #include "file.h"
 #include "fcntl.h"
 
+#define MAXSYMLINKS 10
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -302,6 +304,35 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+  int n;
+
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+
+  if(writei(ip, 0, (uint64)target, 0, n + 1) != n + 1){
+    ip->nlink = 0;
+    iupdate(ip);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
+uint64
 sys_open(void)
 {
   char path[MAXPATH];
@@ -328,6 +359,27 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+    if((omode & O_NOFOLLOW) == 0){
+      for(int depth = 0; ip->type == T_SYMLINK; depth++){
+        if(depth >= MAXSYMLINKS){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        if(readi(ip, 0, (uint64)path, 0, MAXPATH) <= 0){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        path[MAXPATH-1] = '\0';
+        iunlockput(ip);
+        if((ip = namei(path)) == 0){
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+      }
+    }
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
