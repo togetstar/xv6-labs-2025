@@ -104,5 +104,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   uint64 interpose_mask;        // System calls rejected for this process
+  char interpose_path[MAXPATH]; // Pathname allowed despite the mask
   char name[16];               // Process name (debugging)
 };

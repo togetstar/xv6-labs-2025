@@ -130,6 +130,18 @@ static uint64 (*syscalls[])(void) = {
 [SYS_interpose] sys_interpose,
 };
 
+static int
+interpose_allow_path(struct proc *p, int num)
+{
+  char path[MAXPATH];
+
+  if(num != SYS_open && num != SYS_exec)
+    return 0;
+  if(argstr(0, path, MAXPATH) < 0)
+    return 0;
+  return strncmp(path, p->interpose_path, MAXPATH) == 0;
+}
+
 void
 syscall(void)
 {
@@ -138,7 +150,8 @@ syscall(void)
 
   num = p->trapframe->a7;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
-    if(num < 64 && (p->interpose_mask & (1ULL << num)) != 0) {
+    if(num < 64 && (p->interpose_mask & (1ULL << num)) != 0 &&
+       !interpose_allow_path(p, num)) {
       p->trapframe->a0 = -1;
       return;
     }

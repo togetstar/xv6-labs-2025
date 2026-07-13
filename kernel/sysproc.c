@@ -118,5 +118,6 @@ sys_interpose(void)
     return -1;
 
   myproc()->interpose_mask = (uint64)mask;
+  safestrcpy(myproc()->interpose_path, path, MAXPATH);
   return 0;
 }
