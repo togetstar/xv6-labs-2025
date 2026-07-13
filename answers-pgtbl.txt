@@ -1,0 +1,21 @@
+print_pgtbl prints leaf PTEs from the current user page table. The low
+addresses are pgtbltest's text, data, heap, and stack pages. Their PTEs contain
+a physical page number and permissions: text is valid, user-readable, and
+executable; data, heap, and stack pages are valid, user-readable, and writable.
+Invalid gaps have a zero PTE.
+
+The high pages near MAXVA are the special per-process mappings. USYSCALL is
+mapped user-readable so ugetpid() can read the pid without a trap. TRAPFRAME is
+kernel-only read/write storage for saved registers. TRAMPOLINE maps the shared
+trap entry/return code and is executable but not user-accessible.
+
+Other read-only per-process values could use the same shared-page idea, for
+example a cached parent pid or process start time. The kernel would update the
+shared page when the value changes, and user code could read it without a
+system call.
+
+vmprint prints every valid PTE in the Sv39 tree. Internal PTEs point to lower
+level page-table pages and have only PTE_V set. Leaf PTEs correspond to the
+same logical pages shown by print_pgtbl: low user program pages, USYSCALL,
+TRAPFRAME, and TRAMPOLINE. The indentation shows each PTE's level in the
+three-level page-table tree.

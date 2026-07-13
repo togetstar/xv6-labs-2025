@@ -23,11 +23,35 @@ struct {
   struct run *freelist;
 } kmem;
 
+#ifdef LAB_PGTBL
+#define NSUPERPAGE 16
+
+struct {
+  struct spinlock lock;
+  struct run *freelist;
+} supermem;
+
+static char *super_start;
+static char *super_end;
+#endif
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+#ifdef LAB_PGTBL
+  initlock(&supermem.lock, "supermem");
+  super_start = (char*)SUPERPGROUNDUP((uint64)end);
+  super_end = super_start + NSUPERPAGE * SUPERPGSIZE;
+  if((uint64)super_end > PHYSTOP)
+    panic("superpage memory");
+  freerange(end, super_start);
+  for(char *p = super_start; p + SUPERPGSIZE <= super_end; p += SUPERPGSIZE)
+    superfree(p);
+  freerange(super_end, (void*)PHYSTOP);
+#else
   freerange(end, (void*)PHYSTOP);
+#endif
 }
 
 void
@@ -80,3 +104,39 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+#ifdef LAB_PGTBL
+void
+superfree(void *pa)
+{
+  struct run *r;
+
+  if(((uint64)pa % SUPERPGSIZE) != 0 || (char*)pa < super_start ||
+     (char*)pa >= super_end)
+    panic("superfree");
+
+  memset(pa, 1, SUPERPGSIZE);
+  r = (struct run*)pa;
+
+  acquire(&supermem.lock);
+  r->next = supermem.freelist;
+  supermem.freelist = r;
+  release(&supermem.lock);
+}
+
+void *
+superalloc(void)
+{
+  struct run *r;
+
+  acquire(&supermem.lock);
+  r = supermem.freelist;
+  if(r)
+    supermem.freelist = r->next;
+  release(&supermem.lock);
+
+  if(r)
+    memset((char*)r, 5, SUPERPGSIZE);
+  return (void*)r;
+}
+#endif
