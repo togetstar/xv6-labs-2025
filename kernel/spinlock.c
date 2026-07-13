@@ -121,32 +121,63 @@ release(struct spinlock *lk)
 }
 
 #ifdef LAB_LOCK
+#define RW_WRITE (1U << 31)
+#define RW_READERS (RW_WRITE - 1)
+
 static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  for(;;){
+    uint state;
+
+    while((__atomic_load_n(&rwlk->state, __ATOMIC_ACQUIRE) & RW_WRITE) ||
+          __atomic_load_n(&rwlk->waiting_writers, __ATOMIC_ACQUIRE))
+      ;
+
+    state = __atomic_load_n(&rwlk->state, __ATOMIC_ACQUIRE);
+    if(state & RW_WRITE)
+      continue;
+    if((state & RW_READERS) == RW_READERS)
+      panic("read_acquire");
+
+    if(__sync_bool_compare_and_swap(&rwlk->state, state, state + 1)){
+      if(__atomic_load_n(&rwlk->waiting_writers, __ATOMIC_ACQUIRE) == 0)
+        return;
+
+      __atomic_fetch_sub(&rwlk->state, 1, __ATOMIC_ACQ_REL);
+    }
+  }
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  uint state = __atomic_load_n(&rwlk->state, __ATOMIC_ACQUIRE);
+
+  if((state & RW_WRITE) || (state & RW_READERS) == 0)
+    panic("read_release");
+  __atomic_fetch_sub(&rwlk->state, 1, __ATOMIC_ACQ_REL);
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  __atomic_fetch_add(&rwlk->waiting_writers, 1, __ATOMIC_ACQ_REL);
+
+  while(__sync_bool_compare_and_swap(&rwlk->state, 0, RW_WRITE) == 0)
+    ;
+
+  __atomic_fetch_sub(&rwlk->waiting_writers, 1, __ATOMIC_ACQ_REL);
+  __sync_synchronize();
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  if(__atomic_load_n(&rwlk->state, __ATOMIC_ACQUIRE) != RW_WRITE)
+    panic("write_release");
+  __sync_synchronize();
+  __atomic_store_n(&rwlk->state, 0, __ATOMIC_RELEASE);
 }
 
 void
@@ -180,8 +211,8 @@ write_release(struct rwspinlock *rwlk)
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  initlock(&rwlk->l, "rwlk");
+  rwlk->state = 0;
+  rwlk->waiting_writers = 0;
 }
 
 // Test rwspinlock implementation.
