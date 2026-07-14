@@ -6,6 +6,7 @@
 
 #include "types.h"
 #include "riscv.h"
+#include "memlayout.h"
 #include "defs.h"
 #include "param.h"
 #include "stat.h"
@@ -299,6 +300,72 @@ create(char *path, short type, short major, short minor)
   iunlockput(ip);
   iunlockput(dp);
   return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr, len, offset;
+  int prot, flags;
+  struct file *f;
+  struct proc *p = myproc();
+  struct vma *v = 0;
+
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argaddr(5, &offset);
+
+  if(addr != 0 || len == 0 || offset != 0)
+    return -1;
+  if(flags != MAP_SHARED && flags != MAP_PRIVATE)
+    return -1;
+  if(argfd(4, 0, &f) < 0 || f->type != FD_INODE)
+    return -1;
+  if((prot & PROT_READ) && !f->readable)
+    return -1;
+  if((prot & PROT_WRITE) && flags == MAP_SHARED && !f->writable)
+    return -1;
+
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].used == 0){
+      v = &p->vmas[i];
+      break;
+    }
+  }
+  if(v == 0)
+    return -1;
+
+  len = PGROUNDUP(len);
+  if(p->mmap_base == 0)
+    p->mmap_base = TRAPFRAME;
+  if(len >= p->mmap_base || p->mmap_base - len < p->sz)
+    return -1;
+
+  p->mmap_base -= len;
+  v->used = 1;
+  v->addr = p->mmap_base;
+  v->len = len;
+  v->prot = prot;
+  v->flags = flags;
+  v->offset = offset;
+  v->file = filedup(f);
+
+  return v->addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, len;
+
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  if(len == 0 || addr % PGSIZE)
+    return -1;
+
+  return vmaunmap(myproc(), addr, len);
 }
 
 uint64

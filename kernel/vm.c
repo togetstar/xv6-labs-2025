@@ -5,8 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -386,7 +389,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+      if((pa0 = vmfault(pagetable, va0, 1)) == 0) {
         return -1;
       }
     }
@@ -445,8 +448,119 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-// allocate and map user memory if process is referencing a page
-// that was lazily allocated in sys_sbrk().
+static struct vma*
+findvma(struct proc *p, uint64 va)
+{
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->used && va >= v->addr && va < v->addr + v->len)
+      return v;
+  }
+  return 0;
+}
+
+static int
+mmapperms(int prot)
+{
+  int perm = PTE_U;
+
+  if(prot & PROT_READ)
+    perm |= PTE_R;
+  if(prot & PROT_WRITE)
+    perm |= PTE_R | PTE_W;
+  if(prot & PROT_EXEC)
+    perm |= PTE_X;
+  return perm;
+}
+
+static int
+vmawriteback(struct proc *p, struct vma *v, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa, off;
+  uint n;
+
+  if((v->flags & MAP_SHARED) == 0 || (v->prot & PROT_WRITE) == 0)
+    return 0;
+
+  pte = walk(p->pagetable, va, 0);
+  if(pte == 0 || (*pte & PTE_V) == 0)
+    return 0;
+
+  off = v->offset + va - v->addr;
+  begin_op();
+  ilock(v->file->ip);
+  if(off >= v->file->ip->size){
+    iunlock(v->file->ip);
+    end_op();
+    return 0;
+  }
+  n = v->file->ip->size - off;
+  if(n > PGSIZE)
+    n = PGSIZE;
+  pa = PTE2PA(*pte);
+  if(writei(v->file->ip, 0, pa, off, n) != n){
+    iunlock(v->file->ip);
+    end_op();
+    return -1;
+  }
+  iunlock(v->file->ip);
+  end_op();
+  return 0;
+}
+
+int
+vmaunmap(struct proc *p, uint64 addr, uint64 len)
+{
+  struct vma *v;
+  uint64 end;
+
+  if(len == 0 || addr % PGSIZE)
+    return -1;
+  len = PGROUNDUP(len);
+  end = addr + len;
+  if(end < addr)
+    return -1;
+
+  v = findvma(p, addr);
+  if(v == 0)
+    return 0;
+  if(end > v->addr + v->len)
+    return -1;
+  if(addr != v->addr && end != v->addr + v->len)
+    return -1;
+
+  for(uint64 a = addr; a < end; a += PGSIZE){
+    if(vmawriteback(p, v, a) < 0)
+      return -1;
+    uvmunmap(p->pagetable, a, 1, 1);
+  }
+
+  if(addr == v->addr && end == v->addr + v->len){
+    fileclose(v->file);
+    memset(v, 0, sizeof(*v));
+  } else if(addr == v->addr){
+    v->addr = end;
+    v->offset += len;
+    v->len -= len;
+  } else {
+    v->len -= len;
+  }
+
+  return 0;
+}
+
+void
+vmaunmapall(struct proc *p)
+{
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].used)
+      vmaunmap(p, p->vmas[i].addr, p->vmas[i].len);
+  }
+}
+
+// Allocate and map user memory if process is referencing a page
+// that was lazily allocated in sys_sbrk() or a memory-mapped file.
 // returns 0 if va is invalid or already mapped, or if
 // out of physical memory, and physical address if successful.
 uint64
@@ -454,13 +568,43 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   uint64 mem;
   struct proc *p = myproc();
+  struct vma *v;
 
-  if (va >= p->sz)
+  if(va >= MAXVA)
     return 0;
   va = PGROUNDDOWN(va);
   if(ismapped(pagetable, va)) {
     return 0;
   }
+
+  if((v = findvma(p, va)) != 0){
+    if(read && (v->prot & PROT_READ) == 0)
+      return 0;
+    if(read == 0 && (v->prot & PROT_WRITE) == 0)
+      return 0;
+
+    mem = (uint64) kalloc();
+    if(mem == 0)
+      return 0;
+    memset((void *)mem, 0, PGSIZE);
+
+    ilock(v->file->ip);
+    if(readi(v->file->ip, 0, mem, v->offset + va - v->addr, PGSIZE) < 0){
+      iunlock(v->file->ip);
+      kfree((void *)mem);
+      return 0;
+    }
+    iunlock(v->file->ip);
+
+    if(mappages(pagetable, va, PGSIZE, mem, mmapperms(v->prot)) != 0){
+      kfree((void *)mem);
+      return 0;
+    }
+    return mem;
+  }
+
+  if (va >= p->sz)
+    return 0;
   mem = (uint64) kalloc();
   if(mem == 0)
     return 0;

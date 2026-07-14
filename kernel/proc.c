@@ -124,6 +124,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->mmap_base = TRAPFRAME;
+  memset(p->vmas, 0, sizeof(p->vmas));
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -168,6 +170,8 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->mmap_base = 0;
+  memset(p->vmas, 0, sizeof(p->vmas));
   p->state = UNUSED;
 }
 
@@ -285,6 +289,14 @@ kfork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  np->mmap_base = p->mmap_base;
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      np->vmas[i] = p->vmas[i];
+      np->vmas[i].file = filedup(p->vmas[i].file);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -327,6 +339,8 @@ kexit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  vmaunmapall(p);
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

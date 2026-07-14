@@ -89,6 +89,7 @@ int             cpuid(void);
 void            kexit(int);
 int             kfork(void);
 int             growproc(int);
+void            vmaunmapall(struct proc*);
 void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);
@@ -186,6 +187,7 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
+int             vmaunmap(struct proc*, uint64, uint64);
 #if defined(LAB_PGTBL) || defined(SOL_MMAP)
 void            vmprint(pagetable_t);
 #endif

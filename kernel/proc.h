@@ -28,6 +28,20 @@ struct cpu {
 
 extern struct cpu cpus[NCPU];
 
+struct file;
+
+// Per-process memory-mapped file area.
+#define NVMA 16
+struct vma {
+  int used;
+  uint64 addr;
+  uint64 len;
+  int prot;
+  int flags;
+  uint64 offset;
+  struct file *file;
+};
+
 // per-process data for the trap handling code in trampoline.S.
 // sits in a page by itself just under the trampoline page in the
 // user page table. not specially mapped in the kernel page table.
@@ -103,5 +117,7 @@ struct proc {
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
+  struct vma vmas[NVMA];       // Memory-mapped file regions
+  uint64 mmap_base;            // Next top-down mmap allocation point
   char name[16];               // Process name (debugging)
 };
